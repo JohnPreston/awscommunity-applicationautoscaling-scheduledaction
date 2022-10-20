@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Template to activate AwsCommunity::ApplicationAutoscaling::ScheduledAction resource type in the account.
+
+Parameters:
+  PublicTypeArn:
+    Type: String
+    AllowedPattern: "none|^arn:aws[A-Za-z0-9-]{0,64}:cloudformation:[A-Za-z0-9-]{1,64}::type/.+/[0-9a-zA-Z]{12,40}/.+"
+    Default: none
+    Description: The Public Resource ARN to activate.
+
+  PermissionsBoundaryArn:
+    Type: String
+    Default: none
+    Description: Whether the IAM roles should have an IAM Policy as Permissions Boundary
+
+  ExecutionRoleArn:
+    Type: String
+    AllowedPattern: "^none$|^arn:aws[A-Za-z0-9-]{0,64}:iam::[0-9]{12}:role/.+$"
+    Description: Use an existing IAM Role linked to AWS CFN that will invoke API calls on your behalf.
+    Default: none
+
+  LoggingRoleArn:
+    Type: String
+    AllowedPattern: "^none$|^arn:aws[A-Za-z0-9-]{0,64}:iam::[0-9]{12}:role/.+$"
+    Description: Use an existing IAM Role linked to AWS CFN that allows to write logs to CloudWatch
+    Default: none
+
+
+Conditions:
+  NoBoundary: !Equals [ !Ref PermissionsBoundaryArn, "none" ]
+  PublicTypeArnOverride: !Not [ !Equals [ !Ref PublicTypeArn, "none" ] ]
+  CreateExecRole: !Equals [ !Ref ExecutionRoleArn, "none" ]
+  CreateLoggingRole: !Equals [ !Ref LoggingRoleArn, "none" ]
+
+Resources:
+  ExecutionRole:
+    Condition: CreateExecRole
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If
+        - NoBoundary
+        - !Ref AWS::NoValue
+        - !Ref PermissionsBoundaryArn
+      MaxSessionDuration: 8400
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "resources.cloudformation.${AWS::URLSuffix}"
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: ResourceTypePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: "SecretsManagerAccess"
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                Resource: "*"
+                Effect: Allow
+
+  LogAndMetricsDeliveryRole:
+    Type: AWS::IAM::Role
+    Condition: CreateLoggingRole
+    Properties:
+      PermissionsBoundary: !If
+        - NoBoundary
+        - !Ref AWS::NoValue
+        - !Ref PermissionsBoundaryArn
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - !Sub "resources.cloudformation.${AWS::URLSuffix}"
+                - !Sub "hooks.cloudformation.${AWS::URLSuffix}"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount:
+                  Ref: AWS::AccountId
+      Path: "/"
+      Policies:
+        - PolicyName: LogAndMetricsDeliveryRolePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+
+  ResourceActivation:
+    Type: AWS::CloudFormation::TypeActivation
+    Properties:
+      AutoUpdate: true
+      ExecutionRoleArn: !If
+        - CreateExecRole
+        - !GetAtt ExecutionRole.Arn
+        - !Ref ExecutionRoleArn
+      LoggingConfig:
+        LogGroupName: cfn/types/resource/public/awscommunity-applicationautoscaling-scheduledaction
+        LogRoleArn: !If
+          - CreateLoggingRole
+          - !GetAtt LogAndMetricsDeliveryRole.Arn
+          - !Ref LoggingRoleArn
+      PublicTypeArn: !If
+        - PublicTypeArnOverride
+        - !Ref PublicTypeArn
+        - !Sub "arn:aws:cloudformation:${AWS::Region}::type/resource/9331cf547939e23b9c7f24086db031317893be87/AwsCommunity-ApplicationAutoscaling-ScheduledAction"
+      VersionBump: MINOR
